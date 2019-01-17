@@ -19,7 +19,7 @@ In short:
 2) Upgrade from ChiliProject 2.4.0 to OpenProject 7.4.2 (which here includes some fixes to make the migration work).
 3) Upgrade to latest OpenProject (8.2).
 
-The given script in this folder won't work out of the box.
+The given script in this folder won't work out of the box or not at all for you.
 You need to configure the same database for all projects (redmine, chiliproject, openproject).
 
 SEE ALSO
