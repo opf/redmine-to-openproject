@@ -21,3 +21,8 @@ In short:
 
 The given script in this folder won't work out of the box.
 You need to configure the same database for all projects (redmine, chiliproject, openproject).
+
+SEE ALSO
+--------
+
+[Migration steps](https://github.com/opf/redmine-to-openproject/blob/master/redmine/rm_to_op-migration/README.md)
