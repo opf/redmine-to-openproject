@@ -1,0 +1,307 @@
+From cc621128436ba55b744ed70058e186ccf19d722b Mon Sep 17 00:00:00 2001
+From: Markus Kahl <machisuji@gmail.com>
+Date: Thu, 15 Mar 2018 23:07:27 +0000
+Subject: [PATCH] migration fixes
+
+---
+ app/models/journal/aggregated_journal.rb      |  2 +-
+ app/models/wiki.rb                            | 19 +++++++++++++++----
+ .../development_data/custom_fields_seeder.rb  |  2 --
+ config/database.yml                           |  3 ++-
+ ...files_attached_to_projects_and_versions.rb |  7 +------
+ ...920085055_legacy_changeset_journal_data.rb |  2 +-
+ .../legacy_journal_migrator.rb                | 18 +++++++++++-------
+ db/migrate/migration_utils/queries.rb         |  4 +++-
+ .../lib/acts_as_customizable.rb               | 14 +++++++++++++-
+ lib/redmine/menu_manager/menu_helper.rb       |  9 +++++----
+ lib/tasks/shared/attachment_migration.rb      | 17 +++++++++++++++--
+ lib/tasks/shared/legacy_attachment.rb         | 17 +++++++++++------
+ ...14073606_aggregated_backlogs_migrations.rb |  2 +-
+ 13 files changed, 79 insertions(+), 37 deletions(-)
+
+diff --git a/app/models/journal/aggregated_journal.rb b/app/models/journal/aggregated_journal.rb
+index 8cb7cbaddc..9399800ffc 100644
+--- a/app/models/journal/aggregated_journal.rb
++++ b/app/models/journal/aggregated_journal.rb
+@@ -178,7 +178,7 @@ class Journal::AggregatedJournal
+       "SELECT predecessor.*, #{sql_group_counter(uid)} AS group_number
+       FROM #{sql_rough_group_from_clause(uid)}
+       #{sql_rough_group_join(conditions[:join_conditions])}
+-      #{sql_rough_group_where(conditions[:where_conditions])}"
++      #{sql_rough_group_where(conditions[:where_conditions])} ORDER BY predecessor.created_at"
+     end
+ 
+     def additional_conditions(journable, until_version, journal_id)
+diff --git a/app/models/wiki.rb b/app/models/wiki.rb
+index 4b3f6341fa..2ef90d9350 100644
+--- a/app/models/wiki.rb
++++ b/app/models/wiki.rb
+@@ -100,13 +100,24 @@ class Wiki < ActiveRecord::Base
+   end
+ 
+   def create_menu_item_for_start_page
+-    wiki_menu_item = wiki_menu_items.find_or_initialize_by(title: start_page) { |item|
+-      item.name = 'wiki'
+-    }
++    if !MenuItems::WikiMenuItem.where(wiki_id: self.id).exists?
++      wiki_menu_item = MenuItems::WikiMenuItem.new title: start_page
++      wiki_menu_item.name = 'wiki'
++    else
++      wiki_menu_item = wiki_menu_items.find_or_initialize_by(title: start_page) { |item|
++        item.name = 'wiki'
++      }
++    end
++
+     wiki_menu_item.new_wiki_page = true
+     wiki_menu_item.index_page = true
+ 
+-    wiki_menu_item.save!
++    if wiki_menu_item.respond_to?(:navigtable_id) # new 7.4 schema
++      wiki_menu_item.save!
++    else # old pre-migration schema (just after cp 2.4)
++      wiki_menu_item.wiki_id = self.id
++      wiki_menu_item.save! validate: false
++    end
+   end
+ 
+   private
+diff --git a/app/seeders/development_data/custom_fields_seeder.rb b/app/seeders/development_data/custom_fields_seeder.rb
+index 34944071a5..46fbb57162 100644
+--- a/app/seeders/development_data/custom_fields_seeder.rb
++++ b/app/seeders/development_data/custom_fields_seeder.rb
+@@ -100,8 +100,6 @@ module DevelopmentData
+       print '.'
+ 
+       cfs
+-    rescue => e
+-      binding.pry
+     end
+ 
+     def extend_group(type, group)
+diff --git a/config/database.yml b/config/database.yml
+index e9dddd159d..dd982c6ed2 100644
+--- a/config/database.yml
++++ b/config/database.yml
+@@ -1,8 +1,9 @@
+ <% url = ENV.fetch('DATABASE_URL') %>
+ 
+-production:
++development:
+   url: <%= url %>
+   <% if url.start_with? 'mysql' %>
++  encoding: utf8
+   reconnect: true
+   variables:
+     # These are the default MySql Modes for rails 5.0 only excluding
+diff --git a/db/migrate/20130807141542_remove_files_attached_to_projects_and_versions.rb b/db/migrate/20130807141542_remove_files_attached_to_projects_and_versions.rb
+index 424ab6d3ab..07da45f5f0 100644
+--- a/db/migrate/20130807141542_remove_files_attached_to_projects_and_versions.rb
++++ b/db/migrate/20130807141542_remove_files_attached_to_projects_and_versions.rb
+@@ -38,12 +38,7 @@ class RemoveFilesAttachedToProjectsAndVersions < ActiveRecord::Migration[4.2]
+             "'migrations:attachments:delete_from_projects_and_versions'."\
+             "\n\n"\
+             "You can also move all attachments to newly created wiki pages using:\n"\
+-            "'migrations:attachments:move_to_wiki'\n\n"\
+-            "Note: Moving the attachments to a wiki will only work after all migrations are done.\n"\
+-            "      Rerun the migrations with IGNORE_PROJECT_AND_VERSIONS_ATTACHMENTS=true\n"\
+-            "      in the environment to skip this check. Then run the rake task above to move\n"\
+-            "      the attachments to wiki pages."
+-            "\n\n\n"
++            "'migrations:attachments:move_to_wiki'\n\n"
+     end
+   end
+ 
+diff --git a/db/migrate/20130920085055_legacy_changeset_journal_data.rb b/db/migrate/20130920085055_legacy_changeset_journal_data.rb
+index f20af05d12..d3c37449ea 100644
+--- a/db/migrate/20130920085055_legacy_changeset_journal_data.rb
++++ b/db/migrate/20130920085055_legacy_changeset_journal_data.rb
+@@ -31,7 +31,7 @@ require_relative 'migration_utils/legacy_journal_migrator'
+ 
+ class LegacyChangesetJournalData < ActiveRecord::Migration[4.2]
+   def up
+-    add_index 'changeset_journals', ['journal_id']
++    # add_index 'changeset_journals', ['journal_id']
+ 
+     migrator.run
+   end
+diff --git a/db/migrate/migration_utils/legacy_journal_migrator.rb b/db/migrate/migration_utils/legacy_journal_migrator.rb
+index 2246881648..f037397580 100644
+--- a/db/migrate/migration_utils/legacy_journal_migrator.rb
++++ b/db/migrate/migration_utils/legacy_journal_migrator.rb
+@@ -168,9 +168,11 @@ module Migration
+         MESSAGE
+ 
+       elsif journal.size == 0
+-
+-        journal = create_journal(legacy_journal)
+-
++        begin
++          journal = create_journal(legacy_journal)
++        rescue => e
++          puts "failed to migrate journal: #{journal_id}"
++        end
+       end
+ 
+       journal.first
+@@ -241,14 +243,16 @@ module Migration
+         MESSAGE
+ 
+       elsif existing_data_journal.size == 0
+-
+-        existing_data_journal = create_data_journal(journal_id, to_insert)
+-
++        begin
++          existing_data_journal = create_data_journal(journal_id, to_insert)
++        rescue => e
++          puts "failed to migrate journal: #{journal_id}"
++        end
+       end
+ 
+       existing_data_journal = existing_data_journal.first
+ 
+-      update_data_journal(existing_data_journal['id'], to_insert)
++      update_data_journal(existing_data_journal['id'], to_insert) if existing_data_journal
+     end
+ 
+     def create_data_journal(journal_id, to_insert)
+diff --git a/db/migrate/migration_utils/queries.rb b/db/migrate/migration_utils/queries.rb
+index 97a981bf64..76956d0402 100644
+--- a/db/migrate/migration_utils/queries.rb
++++ b/db/migrate/migration_utils/queries.rb
+@@ -65,7 +65,9 @@ module Migration
+     def process_yaml_data(row, column, keys)
+       return row[column] if row[column].blank?
+ 
+-      value = YAML.load row[column]
++      # yeah, dunno, but apparently '=' may have been serialized as a Syck::DefaultKey instance...
++      yaml = row[column].gsub('!ruby/object:Syck::DefaultKey {}', '"="')
++      value = YAML.load yaml
+ 
+       if value.is_a? Array
+         value.map! do |e|
+diff --git a/lib/plugins/acts_as_customizable/lib/acts_as_customizable.rb b/lib/plugins/acts_as_customizable/lib/acts_as_customizable.rb
+index c6ad19db12..dbefbc4d96 100644
+--- a/lib/plugins/acts_as_customizable/lib/acts_as_customizable.rb
++++ b/lib/plugins/acts_as_customizable/lib/acts_as_customizable.rb
+@@ -184,7 +184,19 @@ module Redmine
+         end
+ 
+         def save_custom_field_values
+-          self.custom_values = custom_field_values
++          begin
++            self.custom_values = custom_field_values
++          rescue => e
++            if self.is_a? User
++              # no user custom fields in data anyway
++              @custom_field_values_changed = false
++              @custom_field_values = nil
++
++              return nil
++            else
++              puts "error saving #{self.inspect}: #{e.message}"
++            end
++          end
+           custom_field_values.each(&:save)
+           @custom_field_values_changed = false
+           @custom_field_values = nil
+diff --git a/lib/redmine/menu_manager/menu_helper.rb b/lib/redmine/menu_manager/menu_helper.rb
+index 0b812d7264..90dc530126 100644
+--- a/lib/redmine/menu_manager/menu_helper.rb
++++ b/lib/redmine/menu_manager/menu_helper.rb
+@@ -47,10 +47,11 @@ module Redmine::MenuManager::MenuHelper
+   end
+ 
+   def build_work_packages_menu(_project)
+-    query_menu_items = visible_queries
+-                       .includes(:query_menu_item)
+-                       .map(&:query_menu_item)
+-                       .compact
++    # query_menu_items = visible_queries
++    #                    .includes(:query_menu_item)
++    #                    .map(&:query_menu_item)
++    #                    .compact
++    query_menu_items = []
+ 
+     Redmine::MenuManager.loose :project_menu do |menu|
+       query_menu_items.each do |query_menu_item|
+diff --git a/lib/tasks/shared/attachment_migration.rb b/lib/tasks/shared/attachment_migration.rb
+index df92172623..5ddc323d22 100644
+--- a/lib/tasks/shared/attachment_migration.rb
++++ b/lib/tasks/shared/attachment_migration.rb
+@@ -72,7 +72,15 @@ module Tasks
+           puts "Moving #{attachments.size} Version attachments to wiki page '#{page.title}' [#{i + 1}/#{versions.size}]"
+ 
+           attachments.each do |attachment|
+-            attachment.update! container_type: "WikiPage", container_id: page.id
++            if attachment.content_type.blank? && attachment.inspect.to_s.include?(".pdf")
++              attachment.content_type = "application/pdf"
++              attachment.update! container_type: "WikiPage", container_id: page.id
++            elsif attachment.content_type.blank?
++              puts "Attachment invalid: #{attachment.inspect}"
++              attachment.destroy
++            else
++              attachment.update! container_type: "WikiPage", container_id: page.id
++            end
+           end
+         end
+       end
+@@ -87,7 +95,12 @@ module Tasks
+ 
+       def enable_wiki!(project)
+         unless project.module_enabled? "wiki"
+-          project.enabled_modules.create name: "wiki"
++          begin
++            MenuItems::WikiMenuItem.table_name = "wiki_menu_items"
++            project.enabled_modules.create name: "wiki"
++          ensure
++            MenuItems::WikiMenuItem.table_name = "menu_items"
++          end
+ 
+           if project.wiki.nil?
+             Wiki.create! project: project, start_page: "Wiki", status: 1
+diff --git a/lib/tasks/shared/legacy_attachment.rb b/lib/tasks/shared/legacy_attachment.rb
+index b88d163941..a4bd66e6f1 100644
+--- a/lib/tasks/shared/legacy_attachment.rb
++++ b/lib/tasks/shared/legacy_attachment.rb
+@@ -35,14 +35,19 @@ module Tasks
+         end
+ 
+         if file_name && File.readable?(file)
+-          FileUtils.move file, new_file
+-          attachment.file = File.open(new_file)
+-          attachment.filename = ''
+-          attachment.save!
++          begin
++            FileUtils.move file, new_file
++            file_handle = File.open(new_file)
++            attachment.file = file_handle
++            attachment.filename = ''
++            attachment.save!
+ 
+-          FileUtils.rm_f new_file
++            FileUtils.rm_f new_file
+ 
+-          File.readable? attachment.file.path
++            File.readable? attachment.file.path
++          ensure
++            file_handle.close if file_handle
++          end
+         else
+           path = attachment.file.path
+           if path && File.readable?(path)
+diff --git a/vendored-plugins/openproject-backlogs/db/migrate/20111014073606_aggregated_backlogs_migrations.rb b/vendored-plugins/openproject-backlogs/db/migrate/20111014073606_aggregated_backlogs_migrations.rb
+index 3cea13ee1d..d62f5a0419 100644
+--- a/vendored-plugins/openproject-backlogs/db/migrate/20111014073606_aggregated_backlogs_migrations.rb
++++ b/vendored-plugins/openproject-backlogs/db/migrate/20111014073606_aggregated_backlogs_migrations.rb
+@@ -76,7 +76,7 @@ class AggregatedBacklogsMigrations < ActiveRecord::Migration
+         t.integer 'issue_status_id'
+       end
+ 
+-      if @issues_table_exists
++      if false && @issues_table_exists
+         change_table 'issues' do |t|
+           t.integer 'position'
+           t.integer 'story_points'
+-- 
+2.17.1
+
