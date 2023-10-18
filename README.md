@@ -1,3 +1,5 @@
+**This repository has been archived. We have been using this internally to migrate several redmine installations, but I can't see us using it anymore. We will still leave in the unlikely event someone (including us) wants to migrate again and needs some inspiration on how to do it.**
+
 Also check out all the repos in the subfolders (redmine, chiliproject, openproject).
 See README.txt for the respective SHAs.
 Every project includes a .ruby-version file with the required ruby version.
